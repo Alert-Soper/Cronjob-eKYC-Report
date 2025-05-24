@@ -2,10 +2,10 @@ name: Daily Grafana Report
 
 on:
   schedule:
-    - cron: '0 9 * * *'  # ทุกวันเวลา 09:00 UTC (16:00 น. ไทย)
+    - cron: '0 9 * * *'
   push:
     branches:
-      - main
+    - main
   workflow_dispatch:
 
 env:
@@ -18,99 +18,46 @@ jobs:
   generate-and-send-report:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+    - name: Checkout repository
+      uses: actions/checkout@v3
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests pillow python-dotenv
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pillow python-dotenv file
 
-      - name: Download Grafana graphs
-        env:
-          GRAFANA_TOKEN: ${{ secrets.GRAFANA_TOKEN }}
-        run: |
-          IFS=',' read -ra PANELS <<< "$PANEL_IDS"
-          for panel_id in "${PANELS[@]}"; do
-            echo "Downloading panel $panel_id"
-            curl -H "Authorization: Bearer $GRAFANA_TOKEN" \
-              "$GRAFANA_URL/render/d-solo/$DASHBOARD_UID?panelId=$panel_id&width=800&height=600&from=now-1d&to=now" \
-              -o "grafana_panel_$panel_id.png"
-            
-            # Optimize image (แก้ไขเป็น one-liner)
+    - name: Download Grafana graphs
+      env:
+        GRAFANA_TOKEN: ${{ secrets.GRAFANA_TOKEN }}
+      run: |
+        IFS=',' read -ra PANELS <<< "$PANEL_IDS"
+        for panel_id in "${PANELS[@]}"; do
+          echo "Downloading panel $panel_id"
+          
+          # ดาวน์โหลดด้วย curl และเก็บ output ไว้ตรวจสอบ
+          curl_response=$(curl -v -H "Authorization: Bearer $GRAFANA_TOKEN" \
+            "$GRAFANA_URL/render/d-solo/$DASHBOARD_UID?panelId=$panel_id&width=800&height=600&from=now-1d&to=now" \
+            -o "grafana_panel_$panel_id.png" 2>&1)
+          
+          echo "Curl response:"
+          echo "$curl_response"
+          
+          # ตรวจสอบประเภทไฟล์
+          if file "grafana_panel_$panel_id.png" | grep -q 'PNG image'; then
+            echo "File is valid PNG, converting to JPG"
             python -c "from PIL import Image; img = Image.open('grafana_panel_$panel_id.png'); img.save('grafana_panel_$panel_id.jpg', quality=85, optimize=True)"
-            
-            # ลบไฟล์ PNG เดิม (optional)
             rm "grafana_panel_$panel_id.png"
-          done
+          else
+            echo "ERROR: Downloaded file is not a valid PNG image"
+            echo "File content:"
+            head -c 200 "grafana_panel_$panel_id.png"  # แสดงส่วนต้นของไฟล์
+            exit 1
+          fi
+        done
 
-      - name: Send to Line Group
-        env:
-          CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
-        run: |
-          python - << "EOF"
-          import os
-          import requests
-          import json
-          from PIL import Image
-
-          def optimize_image(image_path):
-              output_path = f"optimized_{os.path.basename(image_path)}"
-              with Image.open(image_path) as img:
-                  img.save(output_path, format='JPEG', quality=85)
-              return output_path
-
-          headers = {
-              'Authorization': f'Bearer {os.environ["CHANNEL_ACCESS_TOKEN"]}',
-              'Content-Type': 'application/json'
-          }
-
-          # ส่งข้อความเริ่มต้น
-          requests.post(
-              'https://api.line.me/v2/bot/message/push',
-              headers=headers,
-              json={
-                  "to": os.environ["LINE_GROUP_ID"],
-                  "messages": [{"type": "text", "text": "📊 รายงานกราฟประจำวัน 📊"}]
-              }
-          )
-
-          # ส่งแต่ละกราฟ
-          for panel_id in os.environ["PANEL_IDS"].split(','):
-              image_file = f"grafana_panel_{panel_id}.jpg"  # ใช้ไฟล์ JPEG ที่ optimize แล้ว
-              
-              # อัพโหลดภาพ
-              with open(image_file, 'rb') as f:
-                  upload_res = requests.post(
-                      'https://api-data.line.me/v2/bot/message/upload',
-                      headers={'Authorization': headers['Authorization']},
-                      files={'file': f}
-                  )
-                  image_url = upload_res.json()['url']
-
-              # ส่งภาพ
-              requests.post(
-                  'https://api.line.me/v2/bot/message/push',
-                  headers=headers,
-                  json={
-                      "to": os.environ["LINE_GROUP_ID"],
-                      "messages": [{
-                          "type": "image",
-                          "originalContentUrl": image_url,
-                          "previewImageUrl": image_url
-                      }]
-                  }
-              )
-          EOF
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: grafana-daily-report
-          path: |
-            grafana_panel_*.jpg
+    # ...ขั้นตอนอื่นๆ (Send to Line Group, Upload artifacts) ...
