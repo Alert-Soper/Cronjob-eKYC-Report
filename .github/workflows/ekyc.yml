@@ -100,8 +100,17 @@ jobs:
             
             # Success Rate
             if 'success_rate' in results:
+            try:
+            # สำหรับผลลัพธ์แบบ scalar (ค่าเดียว)
+            if results['success_rate']['data']['resultType'] == 'scalar':
+                metrics['success_rate'] = float(results['success_rate']['data']['result'][1])
+            # สำหรับผลลัพธ์แบบ range (หลายค่า)
+            elif results['success_rate']['data']['resultType'] == 'matrix':
                 values = [float(x[1]) for x in results['success_rate']['data']['result'][0]['values']]
                 metrics['success_rate'] = sum(values) / len(values)
+            except (KeyError, IndexError, TypeError) as e:
+            print(f"Error processing success_rate: {e}")
+            metrics['success_rate'] = 0.0
             
             # API Errors
             if 'api_errors' in results:
