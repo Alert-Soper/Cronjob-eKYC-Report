@@ -2,7 +2,7 @@ name: Daily PromQL Report via Grafana
 
 on:
   schedule:
-    - cron: '0 9 * * *'  # ทุกวันเวลา 09:00 UTC (16:00 น. ไทย)
+    - cron: '30 1 * * *'  # ทุกวันเวลา 09:00 UTC (16:00 น. ไทย)
   push:
     branches:
     - main
@@ -47,19 +47,21 @@ jobs:
             "Authorization": f"Bearer {os.environ['GRAFANA_TOKEN']}",
             "Content-Type": "application/json"
         }
-
+        job_name = "thinker-gw"
+        time_range = "1d"
+        time_r = "7d"
         # 1. กำหนด PromQL Queries (ใช้ได้เหมือน Query ใน Prometheus โดยตรง)
         queries = {
-            "success_rate": """
-                100 * (
-                  sum(rate(http_request_total{job="thinker-gw",status_code=~"2.."}[1d]))
-                  /
-                  sum(rate(http_request_total{job="thinker-gw"}[1d]))
-                )
+            "success_rate": f"""
+                  100 * (
+            sum(rate(http_requests_total{{job="{job_name}", status=~"2.."}}[{time_range}]))
+            /
+            sum(rate(http_requests_total{{job="{job_name}"}}[{time_range}]))
+            )
             """,
-            "api_errors": "sum(rate(http_request_total{job="thinker-gw",status_code=~"5.."}[1d]))",
-            "daily_attempts": "sum(increase(http_request_total{job="thinker-gw"}[1d]))",
-            "weekly_attempts": "sum(increase(http_request_total{job="thinker-gw"}[7d]))"
+            "api_errors": sum(rate(http_request_total{job="{job_name}",status_code=~"5.."}[{time_range}])),
+            "daily_attempts": sum(increase(http_request_total{job="{job_name}"}[{time_range}])),
+            "weekly_attempts": sum(increase(http_request_total{job="{job_name}"}[{time_r}]))
         }
 
         # 2. ดึงข้อมูลผ่าน Grafana Data Source Proxy
