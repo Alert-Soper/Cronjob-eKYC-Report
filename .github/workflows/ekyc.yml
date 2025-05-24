@@ -61,7 +61,6 @@ jobs:
         done
 
     - name: Send to Line Group
-      if: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
       env:
         CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
       run: |
