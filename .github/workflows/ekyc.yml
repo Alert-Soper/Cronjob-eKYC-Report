@@ -47,21 +47,32 @@ jobs:
             "Authorization": f"Bearer {os.environ['GRAFANA_TOKEN']}",
             "Content-Type": "application/json"
         }
+        
+        # 1. กำหนด PromQL Queries (ใช้ได้เหมือน Query ใน Prometheus โดยตรง)
         job_name = "thinker-gw"
         time_range = "1d"
         time_r = "7d"
-        # 1. กำหนด PromQL Queries (ใช้ได้เหมือน Query ใน Prometheus โดยตรง)
+
         queries = {
-            "success_rate": f"""
-                  100 * (
+        "success_rate": f"""
+        100 * (
             sum(rate(http_requests_total{{job="{job_name}", status=~"2.."}}[{time_range}]))
             /
             sum(rate(http_requests_total{{job="{job_name}"}}[{time_range}]))
-            )
-            """,
-            "api_errors": sum(rate(http_request_total{job="{job_name}",status_code=~"5.."}[{time_range}])),
-            "daily_attempts": sum(increase(http_request_total{job="{job_name}"}[{time_range}])),
-            "weekly_attempts": sum(increase(http_request_total{job="{job_name}"}[{time_r}]))
+        )
+        """,
+
+        "api_errors": f"""
+        sum(rate(http_request_total{{job="{job_name}", status_code=~"5.."}}[{time_range}]))
+        """,
+
+        "daily_attempts": f"""
+        sum(increase(http_request_total{{job="{job_name}"}}[{time_range}]))
+        """,
+
+        "weekly_attempts": f"""
+        sum(increase(http_request_total{{job="{job_name}"}}[{time_r}]))
+        """
         }
 
         # 2. ดึงข้อมูลผ่าน Grafana Data Source Proxy
