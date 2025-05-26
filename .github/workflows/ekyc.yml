@@ -9,13 +9,17 @@ on:
   workflow_dispatch:
 
 env:
-  GRAFANA_URL: 'http://122.8.149.46:8088/' # <<< ใส่ URL Grafana ของคุณ
-  DATASOURCE_UID: 'beao6gxdgw740f'  # <<< ใส่ UID ของ Prometheus Data Source
+  GRAFANA_URL: 'http://122.8.149.46:8088' # <<< ใส่ URL Grafana ของคุณ
+ # DATASOURCE_UID: 'beao6gxdgw740f'  # <<< ใส่ UID ของ Prometheus Data Source
+  DATASOURCE_UID: ${{ secrets.DATASOURCE_UID }}
  # LINE_GROUP_ID: 'Cd28550496fd213d14a4b8aa42f5215b6' # <<< ใส่ LINE Group ID user alert-blockfint group 12 คน
-  LINE_GROUP_ID: 'C4f96a3dfa5a6c0f8617b8fc931a79628' # <<< ใส่ LINE Group ID user alert-soper group 6 คน
+ # LINE_GROUP_ID: 'C4f96a3dfa5a6c0f8617b8fc931a79628' # <<< ใส่ LINE Group ID user alert-soper group 6 คน config now
+  LINE_GROUP_ID: ${{ secrets.LINE_GROUP_ID }}                 # <<< ใส่ LINE Group ID
   GOOGLE_CHAT_WEBHOOK_URL: ${{ secrets.GOOGLE_CHAT_WEBHOOK_URL }}
   EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
-  JOB_NAME: "thinker-gw" # กำหนด job_name ที่นี่เพื่อให้ง่ายต่อการแก้ไข
+  JOB_NAME: "thinker-gw"                               # กำหนด job_name ที่นี่เพื่อให้ง่ายต่อการแก้ไข
+  SMTP_HOST: "smtp.gmail.com"                          # สามารถเปลี่ยน SMTP Host ได้ถ้าจำเป็น
+  SMTP_PORT: 587                                       # สามารถเปลี่ยน SMTP Port ได้ถ้าจำเป็น
 
 jobs:
   generate-and-send-report:
@@ -52,134 +56,183 @@ jobs:
         import pytz # สำหรับ timezone
 
         # --- Configuration ---
-        grafana_url = os.environ["GRAFANA_URL"]
-        datasource_uid = os.environ["DATASOURCE_UID"]
+        grafana_url = os.environ.get("GRAFANA_URL")
+        datasource_uid = os.environ.get("DATASOURCE_UID")
         grafana_token = os.environ.get("GRAFANA_TOKEN")
-        job_name = os.environ.get("JOB_NAME", "thinker-gw") # ใช้ค่าจาก env หรือ default
+        job_name = os.environ.get("JOB_NAME", "thinker-gw")
+
+        # Debug: Print initial config to check if env vars are loaded
+        print("--- Initial Configuration ---")
+        print(f"GRAFANA_URL: {grafana_url}")
+        print(f"DATASOURCE_UID: {datasource_uid}")
+        print(f"GRAFANA_TOKEN is set: {bool(grafana_token)}")
+        print(f"JOB_NAME: {job_name}")
+        print("-----------------------------")
+
+        if not all([grafana_url, datasource_uid, grafana_token]):
+            print("Error: GRAFANA_URL, DATASOURCE_UID, or GRAFANA_TOKEN is not set. Aborting.")
+            exit(1)
 
         headers = {
             "Authorization": f"Bearer {grafana_token}",
-            "Content-Type": "application/json"
+            "Content-Type": "application/json" # สำหรับ GET ไม่จำเป็นมาก แต่ใส่ไว้ก็ไม่เสียหาย
         }
 
-        # กำหนด timezone ของข้อมูล (ถ้าจำเป็น) และเวลาที่ต้องการ query
-        # รายงานสำหรับ "เมื่อวานนี้" ตามเวลาไทย
+        # กำหนด timezone และเวลาที่ต้องการ query
         thai_tz = pytz.timezone('Asia/Bangkok')
         now_utc = datetime.now(timezone.utc)
         
-        # ต้องการข้อมูลของ "เมื่อวาน" ทั้งวัน (00:00:00 ถึง 23:59:59)
-        # เราจะ query ณ สิ้นสุดของเมื่อวาน (หรือเริ่มต้นของวันนี้)
-        # และ PromQL query จะใช้ range selector [1d] หรือ [24h] เพื่อครอบคลุมวันนั้น
-        report_target_date_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(microseconds=1) # สิ้นสุดวันก่อนหน้า UTC
-        # หรือถ้าอยากได้ ณ สิ้นวันของไทย แล้วแปลงเป็น UTC
-        # today_thai = now_utc.astimezone(thai_tz).date()
-        # start_of_today_thai = thai_tz.localize(datetime.combine(today_thai, datetime.min.time()))
-        # report_time_utc = start_of_today_thai # Query ณ เวลา 00:00 ของวันนี้ในไทย (ซึ่ง PromQL จะดึงข้อมูลย้อนหลัง 1 วันจากจุดนี้)
+        # Query ณ สิ้นสุดของวันก่อนหน้า UTC (เพื่อให้ [1d] ครอบคลุมข้อมูลของ "เมื่อวาน" ทั้งวัน)
+        # เช่น ถ้าวันนี้คือ 2023-10-27 09:00 UTC, report_target_date_utc จะเป็น 2023-10-26 23:59:59.999999 UTC
+        report_target_date_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(microseconds=1)
+        evaluation_timestamp = report_target_date_utc.timestamp() # Unix timestamp
 
         # PromQL queries (ใช้ range vector selector ในตัว query)
+        # การใช้ increase เหมาะสำหรับ counter, rate เหมาะสำหรับ gauge ที่เป็น counter-like
         queries = {
             "success_rate": f'''
             100 * (
-                sum(rate(http_requests_total{{job="{job_name}", status=~"2.."}}[1d]))
+                sum(rate(http_requests_total{{job="{job_name}", status=~"2.."}}[1d] @ {evaluation_timestamp}))
                 /
-                sum(rate(http_requests_total{{job="{job_name}"}}[1d]))
+                sum(rate(http_requests_total{{job="{job_name}"}}[1d] @ {evaluation_timestamp}))
             )
             ''',
-            "api_errors": f'''
-            sum(increase(http_requests_total{{job="{job_name}", status=~"5.."}}[1d]))
+            "api_errors_5xx_rate": f'''
+            sum(rate(http_requests_total{{job="{job_name}", status=~"5.."}}[1d] @ {evaluation_timestamp}))
             ''',
-            "daily_attempts": f'''
-            sum(increase(http_requests_total{{job="{job_name}"}}[1d]))
+            "api_errors_5xx_increase": f'''
+            sum(increase(http_requests_total{{job="{job_name}", status=~"5.."}}[1d] @ {evaluation_timestamp}))
             ''',
-            "weekly_attempts": f'''
-            sum(increase(http_requests_total{{job="{job_name}"}}[7d]))
+            "daily_attempts_increase": f'''
+            sum(increase(http_requests_total{{job="{job_name}"}}[1d] @ {evaluation_timestamp}))
+            ''',
+            "weekly_attempts_increase": f'''
+            sum(increase(http_requests_total{{job="{job_name}"}}[7d] @ {evaluation_timestamp}))
             '''
         }
+        # หมายเหตุ: การใช้ @ timestamp modifier ใน PromQL ทำให้ query ประเมินผล ณ เวลาที่ระบุ
+        # ซึ่งอาจจะจำเป็นหรือไม่ก็ได้ ขึ้นอยู่กับว่า Prometheus version และ Grafana proxy จัดการพารามิเตอร์ 'time' อย่างไร
+        # ถ้าไม่ใส่ @ modifier, พารามิเตอร์ 'time' ใน API call จะทำหน้าที่นี้
 
-        def query_prometheus_via_grafana(query_promql, evaluation_time_unix=None):
-            # ใช้ instant query endpoint ของ Prometheus ผ่าน Grafana proxy
-            # PromQL query เองควรมี range selector (เช่น [1d], [5m])
+        def query_prometheus_via_grafana(query_promql, eval_time_unix):
             api_endpoint = f"{grafana_url}/api/datasources/proxy/{datasource_uid}/api/v1/query"
             params = {"query": query_promql}
-            if evaluation_time_unix:
-                params["time"] = evaluation_time_unix
+            # Prometheus API /api/v1/query ใช้ 'time' พารามิเตอร์
+            # ถ้า PromQL มี @ modifier แล้ว 'time' อาจจะไม่จำเป็น หรืออาจจะ override
+            # ทดลองโดยการส่ง 'time' ไปด้วย
+            params["time"] = str(eval_time_unix)
 
-            print(f"Querying Grafana proxy: {api_endpoint} with params: {params.get('time')}") # Log เวลาที่ใช้ query
+            # กำหนด HTTP Method ตาม jsonData ของ Datasource (ถ้ามี)
+            # จาก log ของคุณ jsonData.httpMethod คือ POST
+            http_method_to_use = "POST" # ตั้งค่าเริ่มต้นตามที่คุณพบ
+            
+            print(f"Querying Grafana proxy (Method: {http_method_to_use}): {api_endpoint}")
+            print(f"Query: {query_promql}")
+            print(f"Evaluation Time (Unix): {eval_time_unix}")
+            
             try:
-                response = requests.get(api_endpoint, headers=headers, params=params, timeout=30)
-                response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+                if http_method_to_use == "POST":
+                    # สำหรับ POST, query ควรอยู่ใน body ไม่ใช่ params
+                    # แต่ Prometheus API /api/v1/query (และ proxy) รับ query ใน form data
+                    data = {"query": query_promql, "time": str(eval_time_unix)}
+                    response = requests.post(api_endpoint, headers=headers, data=data, timeout=45)
+                else: # GET
+                    response = requests.get(api_endpoint, headers=headers, params=params, timeout=45)
+                
+                print(f"Response Status: {response.status_code}")
+                print(f"Response Text (first 300 chars): {response.text[:300]}")
+                response.raise_for_status()
                 return response.json()
-            except requests.exceptions.RequestException as e:
-                print(f"Error querying Grafana API: {e}")
-                print(f"Response status: {response.status_code if 'response' in locals() else 'N/A'}")
-                print(f"Response text: {response.text if 'response' in locals() else 'N/A'}")
-                return {"status": "error", "error": str(e), "errorType": "request_exception"}
+            except requests.exceptions.HTTPError as http_err:
+                print(f"HTTP error occurred: {http_err}")
+                return {"status": "error", "errorType": "http_error", "message": str(http_err), "response_text": response.text if 'response' in locals() else "No response text"}
+            except requests.exceptions.RequestException as req_err:
+                print(f"Request exception occurred: {req_err}")
+                return {"status": "error", "errorType": "request_exception", "message": str(req_err)}
+            except json.JSONDecodeError as json_err:
+                print(f"JSON decode error: {json_err}")
+                print(f"Response text that failed to parse: {response.text if 'response' in locals() else 'No response text'}")
+                return {"status": "error", "errorType": "json_decode_error", "message": str(json_err), "response_text": response.text if 'response' in locals() else "No response text"}
 
 
         def process_results(raw_results_dict):
             metrics = {}
             for name, data in raw_results_dict.items():
-                print(f"Processing '{name}': {json.dumps(data)[:200]}...") # Log บางส่วนของ raw data
+                print(f"Processing '{name}'...")
                 if data and data.get("status") == "success":
-                    result = data.get("data", {}).get("result", [])
-                    if result:
-                        # สำหรับ instant query, result เป็น list ที่มี 1 element (ถ้า query ถูกต้อง)
-                        # element นั้นมี "value": [timestamp, "numeric_value_as_string"]
+                    result_list = data.get("data", {}).get("result", [])
+                    if result_list:
                         try:
-                            value_str = result[0].get("value", [None, None])[1]
-                            if value_str is not None:
-                                metrics[name] = float(value_str)
+                            # Instant query result is typically a vector (list of series)
+                            # Each series has "metric" (labels) and "value" ([timestamp, "value_string"])
+                            # For aggregate queries like sum(), there should be one series in the result_list
+                            if result_list[0].get("value") and len(result_list[0]["value"]) == 2:
+                                value_str = result_list[0]["value"][1]
+                                if value_str is not None and value_str.lower() != "nan": # Check for NaN
+                                    metrics[name] = float(value_str)
+                                else:
+                                    print(f"Warning: Null or NaN value found for '{name}'. Result: {result_list[0]['value']}")
+                                    metrics[name] = 0.0 # Default to 0 for NaN or None
                             else:
-                                print(f"Warning: No value found in result for '{name}'")
-                                metrics[name] = 0 # หรือ None หรือจัดการตามความเหมาะสม
+                                print(f"Warning: Unexpected value format for '{name}'. Result: {result_list[0]}")
+                                metrics[name] = 0.0
                         except (IndexError, TypeError, ValueError) as e:
-                            print(f"Error parsing value for '{name}': {e}. Data: {result}")
-                            metrics[name] = 0 # หรือ None
+                            print(f"Error parsing value for '{name}': {e}. Data: {result_list}")
+                            metrics[name] = 0.0
                     else:
                         print(f"Warning: Empty result array for '{name}'. Data: {data.get('data')}")
-                        metrics[name] = 0 # หรือ None
+                        metrics[name] = 0.0 # Default to 0 if no result
+                elif data and data.get("message"): # Handle cases like "id is invalid"
+                     print(f"Query for '{name}' failed with Grafana message: {data.get('message')}")
+                     if 'response_text' in data: print(f"Full response for '{name}': {data['response_text']}")
+                     metrics[name] = 0.0 # Default to 0 on error
                 else:
-                    print(f"Query for '{name}' failed or returned unexpected data: {data.get('errorType')} - {data.get('error')}")
-                    # หากมี error message จาก Grafana เอง (เช่น "id is invalid") จะอยู่ที่ data.get('message')
-                    if data.get('message'):
-                        print(f"Grafana message for '{name}': {data.get('message')}")
-                    metrics[name] = 0 # หรือ None
+                    print(f"Query for '{name}' failed or returned unexpected data structure. Status: {data.get('status')}, ErrorType: {data.get('errorType')}, Message: {data.get('message')}")
+                    metrics[name] = 0.0
             return metrics
 
         # --- Main execution ---
         raw_results = {}
-        # Query ณ เวลาสิ้นสุดของเมื่อวาน UTC เพื่อให้ [1d] ครอบคลุมข้อมูลของเมื่อวานทั้งวัน
-        evaluation_timestamp = report_target_date_utc.timestamp()
-
-        print(f"Querying data for time: {report_target_date_utc.isoformat()} (Unix: {evaluation_timestamp})")
-
+        print(f"\n--- Querying Data for Time: {report_target_date_utc.isoformat()} (Unix: {evaluation_timestamp}) ---")
         for name, query in queries.items():
-            raw_results[name] = query_prometheus_via_grafana(query, evaluation_time_unix=evaluation_timestamp)
+            raw_results[name] = query_prometheus_via_grafana(query, evaluation_timestamp)
 
-        print("\nRaw results from Grafana API:")
-        print(json.dumps(raw_results, indent=2)) # พิมพ์ผลลัพธ์ดิบทั้งหมดเพื่อ debug
+        print("\n--- Raw Results from Grafana API ---")
+        # Print carefully, could be large or contain sensitive info if not careful with query
+        for name, res in raw_results.items():
+            print(f"Raw result for '{name}': {json.dumps(res, indent=2)[:500]}...") # Print first 500 chars
 
         metrics = process_results(raw_results)
-        print("\nProcessed metrics:")
+        print("\n--- Processed Metrics ---")
         print(json.dumps(metrics, indent=2))
 
+        # Determine report date for display (yesterday, Thai time)
+        report_date_display = report_target_date_utc.astimezone(thai_tz).strftime('%Y-%m-%d')
 
-        if any(metrics.values()): # ตรวจสอบว่ามี metric ใดๆ ที่มีค่าไม่ใช่ 0 หรือ None หรือไม่
-            report_date_display = report_target_date_utc.astimezone(thai_tz).strftime('%Y-%m-%d') # แสดงวันที่ของข้อมูลเป็นเวลาไทย
+        # Check if ANY metric has a non-zero, non-None value. sum() works well here.
+        # metrics.get(name, 0.0) ensures that if a metric is missing, it's treated as 0 for this check.
+        meaningful_data_exists = sum(abs(metrics.get(m, 0.0)) for m in queries.keys()) > 0.001 # Use a small threshold
+
+        if meaningful_data_exists:
+            success_rate_val = metrics.get('success_rate', 0.0)
+            error_rate_val = 100.0 - success_rate_val if success_rate_val is not None else 100.0
+            
             report_lines = [
-                f"📊 รายงานระบบ {job_name} ประจำวัน (via PromQL)",
-                f"⏰ ข้อมูลวันที่: {report_date_display} (ตามเวลาไทย)",
+                f" รายงานระบบ {job_name} ประจำวัน",
+                f" ข้อมูลวันที่: {report_date_display} (ตามเวลาไทย)",
                 "",
-                f"✅ Success Rate: {metrics.get('success_rate', 0):.2f}%",
-                f"❌ Error Rate: {100 - metrics.get('success_rate', 0):.2f}%", # ระวังถ้า success_rate เป็น None
+                f"✅ Success Rate: {success_rate_val:.2f}%",
+                f"❌ Error Rate: {error_rate_val:.2f}%",
                 "",
-                f"🔥 API Errors (5xx): {metrics.get('api_errors', 0):,.0f} ครั้ง",
+                # Using _increase as it's a count over the period
+                f" API Errors (5xx) ใน 24 ชม.: {metrics.get('api_errors_5xx_increase', 0.0):,.0f} ครั้ง",
+                # f" API Errors (5xx) Rate: {metrics.get('api_errors_5xx_rate', 0.0):.4f} req/s", # Uncomment if rate is preferred
                 "",
-                f"📈 Attempts วันนี้ ({report_date_display}): {metrics.get('daily_attempts', 0):,.0f} ครั้ง",
-                f"📅 Attempts 7 วันที่ผ่านมา: {metrics.get('weekly_attempts', 0):,.0f} ครั้ง"
+                f" Attempts วันนี้ ({report_date_display}): {metrics.get('daily_attempts_increase', 0.0):,.0f} ครั้ง",
+                f" Attempts 7 วันที่ผ่านมา: {metrics.get('weekly_attempts_increase', 0.0):,.0f} ครั้ง"
             ]
             report_text = "\n".join(report_lines)
-            print("\nGenerated Report Text:")
+            print("\n--- Generated Report Text ---")
             print(report_text)
 
             # 1. ส่ง LINE
@@ -195,7 +248,7 @@ jobs:
                         'https://api.line.me/v2/bot/message/push',
                         headers={'Authorization': f'Bearer {line_token}', 'Content-Type': 'application/json'},
                         json=message,
-                        timeout=10
+                        timeout=15
                     )
                     print(f"LINE API Response Status Code: {response.status_code}")
                     if response.status_code != 200: print(f"LINE API Response Body: {response.text}")
@@ -208,7 +261,6 @@ jobs:
             google_chat_webhook = os.environ.get("GOOGLE_CHAT_WEBHOOK_URL")
             if google_chat_webhook:
                 try:
-                    # Google Chat ไม่รองรับ Markdown ใน "text" โดยตรง, แต่ card สามารถแสดงผลได้ดีกว่า
                     google_chat_message = {
                         "cardsV2": [{
                             "cardId": "dailyReportCard",
@@ -216,22 +268,22 @@ jobs:
                                 "header": {
                                     "title": f"รายงานระบบ {job_name} ประจำวัน",
                                     "subtitle": f"ข้อมูลวันที่ {report_date_display} (ไทย)",
-                                    "imageUrl": "https://img.icons8.com/plasticine/100/000000/activity-history.png", # Optional icon
+                                    "imageUrl": "https://www.gstatic.com/images/icons/material/system/2x/analytics_gm_blue_48dp.png",
                                     "imageType": "CIRCLE"
                                 },
                                 "sections": [{
                                     "widgets": [
-                                        {"textParagraph": {"text": f"<b>Success Rate:</b> {metrics.get('success_rate', 0):.2f}%"}},
-                                        {"textParagraph": {"text": f"<b>Error Rate:</b> {100 - metrics.get('success_rate', 0):.2f}%"}},
-                                        {"textParagraph": {"text": f"<b>API Errors (5xx):</b> {metrics.get('api_errors', 0):,.0f} ครั้ง"}},
-                                        {"textParagraph": {"text": f"<b>Daily Attempts ({report_date_display}):</b> {metrics.get('daily_attempts', 0):,.0f} ครั้ง"}},
-                                        {"textParagraph": {"text": f"<b>Weekly Attempts (7d):</b> {metrics.get('weekly_attempts', 0):,.0f} ครั้ง"}}
+                                        {"textParagraph": {"text": f"<b>Success Rate:</b> {success_rate_val:.2f}%"}},
+                                        {"textParagraph": {"text": f"<b>Error Rate:</b> {error_rate_val:.2f}%"}},
+                                        {"textParagraph": {"text": f"<b>API Errors (5xx) ใน 24 ชม.:</b> {metrics.get('api_errors_5xx_increase', 0.0):,.0f} ครั้ง"}},
+                                        {"textParagraph": {"text": f"<b>Daily Attempts ({report_date_display}):</b> {metrics.get('daily_attempts_increase', 0.0):,.0f} ครั้ง"}},
+                                        {"textParagraph": {"text": f"<b>Weekly Attempts (7d):</b> {metrics.get('weekly_attempts_increase', 0.0):,.0f} ครั้ง"}}
                                     ]
                                 }]
                             }
                         }]
                     }
-                    response = requests.post(google_chat_webhook, json=google_chat_message, timeout=10)
+                    response = requests.post(google_chat_webhook, json=google_chat_message, timeout=15)
                     print(f"Google Chat Response Status Code: {response.status_code}")
                     if response.status_code != 200: print(f"Google Chat Response Body: {response.text}")
                 except Exception as e:
@@ -243,32 +295,35 @@ jobs:
             smtp_user = os.environ.get("SMTP_USERNAME")
             smtp_pass = os.environ.get("SMTP_PASSWORD")
             email_recipients = os.environ.get("EMAIL_RECIPIENTS")
+            smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+            smtp_port = int(os.environ.get("SMTP_PORT", 587))
+
             if smtp_user and smtp_pass and email_recipients:
                 try:
                     msg = MIMEMultipart()
                     msg['From'] = smtp_user
                     msg['To'] = email_recipients
                     msg['Subject'] = f"รายงานระบบ {job_name} ประจำวัน {report_date_display}"
-
                     html = f"""\
-                    <html>
-                      <body>
-                        <h2>รายงานระบบ {job_name} ประจำวัน</h2>
-                        <p>ข้อมูลวันที่: {report_date_display} (ตามเวลาไทย)</p>
-                        <table border="1" cellpadding="5" cellspacing="0" style="border-collapse: collapse;">
-                          <tr style="background-color: #f2f2f2;"><th>เมตริก</th><th>ค่า</th></tr>
-                          <tr><td>Success Rate</td><td>{metrics.get('success_rate', 0):.2f}%</td></tr>
-                          <tr><td>Error Rate</td><td>{100 - metrics.get('success_rate', 0):.2f}%</td></tr>
-                          <tr><td>API Errors (5xx)</td><td>{metrics.get('api_errors', 0):,.0f} ครั้ง</td></tr>
-                          <tr><td>Daily Attempts ({report_date_display})</td><td>{metrics.get('daily_attempts', 0):,.0f} ครั้ง</td></tr>
-                          <tr><td>Weekly Attempts (7 วัน)</td><td>{metrics.get('weekly_attempts', 0):,.0f} ครั้ง</td></tr>
-                        </table>
-                      </body>
-                    </html>
+                    <html><head><style>
+                      table {{ font-family: Arial, sans-serif; border-collapse: collapse; width: 80%; margin: 20px auto; }}
+                      th, td {{ border: 1px solid #dddddd; text-align: left; padding: 8px; }}
+                      th {{ background-color: #f2f2f2; }}
+                      h2, p {{ text-align: center; }}
+                    </style></head><body>
+                    <h2>รายงานระบบ {job_name} ประจำวัน</h2>
+                    <p>ข้อมูลวันที่: {report_date_display} (ตามเวลาไทย)</p>
+                    <table>
+                      <tr><th>เมตริก</th><th>ค่า</th></tr>
+                      <tr><td>Success Rate</td><td>{success_rate_val:.2f}%</td></tr>
+                      <tr><td>Error Rate</td><td>{error_rate_val:.2f}%</td></tr>
+                      <tr><td>API Errors (5xx) ใน 24 ชม.</td><td>{metrics.get('api_errors_5xx_increase', 0.0):,.0f} ครั้ง</td></tr>
+                      <tr><td>Daily Attempts ({report_date_display})</td><td>{metrics.get('daily_attempts_increase', 0.0):,.0f} ครั้ง</td></tr>
+                      <tr><td>Weekly Attempts (7 วัน)</td><td>{metrics.get('weekly_attempts_increase', 0.0):,.0f} ครั้ง</td></tr>
+                    </table></body></html>
                     """
                     msg.attach(MIMEText(html, 'html'))
-
-                    with smtplib.SMTP('smtp.gmail.com', 587) as server: # ควรใช้ ENV var สำหรับ SMTP host/port
+                    with smtplib.SMTP(smtp_host, smtp_port) as server:
                         server.starttls()
                         server.login(smtp_user, smtp_pass)
                         server.send_message(msg)
@@ -277,31 +332,69 @@ jobs:
                     print(f"ส่งเมลล้มเหลว: {str(e)}")
             else:
                 print("SMTP or EMAIL_RECIPIENTS not set. Skipping Email notification.")
-
             print("\nส่งรายงานทั้งหมด (ที่ตั้งค่าไว้) เรียบร้อยแล้ว")
-        else:
-            error_message_header = "ไม่สามารถสร้างรายงานได้เนื่องจากไม่พบข้อมูลเมตริก หรือข้อมูลที่ได้เป็นศูนย์ทั้งหมด"
-            error_message_details = "Raw API results:\n" + json.dumps(raw_results, indent=2)
-            full_error_message = f"⚠️ {error_message_header}\n\n{error_message_details}"
-            print(full_error_message)
+        else: # meaningful_data_exists is False
+            error_header = f"⚠️ ไม่สามารถสร้างรายงาน {job_name} ได้"
+            error_subheader = "เนื่องจากไม่พบข้อมูลเมตริก หรือข้อมูลที่ได้เป็นศูนย์ทั้งหมด."
+            error_action_advice = "โปรดตรวจสอบ Logs ใน GitHub Actions สำหรับรายละเอียดของ Raw API Results."
+            
+            # สำหรับ LINE (ข้อความสั้น)
+            line_error_message = f"{error_header}\n{error_subheader}\n{error_action_advice}"
 
-            # แจ้งเตือนเมื่อไม่พบข้อมูล (เช่น ไปยัง Google Chat)
+            # สำหรับ Google Chat (สามารถใส่รายละเอียดได้มากขึ้นถ้าจำเป็น)
+            # สร้างรายละเอียดของ raw_results สำหรับ Google Chat (และ log)
+            # ระวัง: raw_results อาจจะใหญ่มาก
+            raw_results_summary_for_error = {}
+            for name, res in raw_results.items():
+                if res and res.get("status") != "success": # เน้นเฉพาะ query ที่ fail
+                    raw_results_summary_for_error[name] = {
+                        "status": res.get("status"),
+                        "message": res.get("message"),
+                        "errorType": res.get("errorType"),
+                        "response_text_preview": (res.get("response_text") or "")[:200] + "..." if res.get("response_text") else "N/A"
+                    }
+                elif not res: # query ไม่ได้ผลลัพธ์เลย
+                     raw_results_summary_for_error[name] = {"status": "no_response", "message": "Query did not return any data structure."}
+
+            if not raw_results_summary_for_error and any(raw_results.values()): # ถ้าทุก query success แต่ค่าเป็น 0 หมด
+                raw_results_summary_for_error = {"info": "All queries returned success, but resulting metrics are zero or NaN."}
+
+
+            google_chat_error_details = "สรุปผลลัพธ์ API ที่อาจมีปัญหา:\n" + json.dumps(raw_results_summary_for_error, indent=2, ensure_ascii=False)
+            google_chat_full_error_message = f"{error_header}\n{error_subheader}\n\n{google_chat_error_details}\n\n{error_action_advice}"
+
+            print(f"\n--- ERROR: No meaningful data for report ---")
+            print(google_chat_full_error_message) # Print a more detailed error for GitHub logs
+
+            # 1. ส่ง LINE แจ้งเตือนปัญหา
+            line_group_id = os.environ.get("LINE_GROUP_ID")
+            line_token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+            if line_group_id and line_token:
+                try:
+                    message = {"to": line_group_id, "messages": [{"type": "text", "text": line_error_message}]}
+                    response = requests.post('https://api.line.me/v2/bot/message/push', headers={'Authorization': f'Bearer {line_token}', 'Content-Type': 'application/json'}, json=message, timeout=15)
+                    print(f"LINE Error Notification - Status: {response.status_code}, Body: {response.text if response.status_code != 200 else 'OK'}")
+                except Exception as e:
+                    print(f"Error sending LINE error notification: {str(e)}")
+            else:
+                print("LINE_GROUP_ID or LINE_CHANNEL_ACCESS_TOKEN not set. Skipping LINE error notification.")
+
+            # 2. ส่ง Google Chat แจ้งเตือนปัญหา
             google_chat_webhook = os.environ.get("GOOGLE_CHAT_WEBHOOK_URL")
             if google_chat_webhook:
                 try:
-                    # ส่ง text ธรรมดา ถ้าข้อมูลยาวไปอาจจะโดนตัด
-                    # สามารถจำกัดความยาวของ error_message_details ได้ถ้าต้องการ
-                    max_len = 3800 # Google Chat text limit is around 4000 chars
-                    if len(full_error_message) > max_len:
-                        trimmed_details = error_message_details[:max_len - len(error_message_header) - 100] + "\n... (truncated)"
-                        full_error_message = f"⚠️ {error_message_header}\n\n{trimmed_details}"
-
-                    requests.post(
-                        google_chat_webhook,
-                        json={"text": full_error_message},
-                        timeout=10
-                    )
-                    print("Error notification sent to Google Chat.")
+                    # ตัดข้อความถ้าจำเป็นสำหรับ Google Chat (text limit ~4000 chars)
+                    if len(google_chat_full_error_message) > 3800:
+                         trimmed_details_len = 3800 - (len(error_header) + len(error_subheader) + len(error_action_advice) + 150) # 150 for buffer and "truncated"
+                         trimmed_details = google_chat_error_details[:trimmed_details_len] + "\n... (รายละเอียดถูกตัดให้สั้นลง)"
+                         final_google_chat_message = f"{error_header}\n{error_subheader}\n\n{trimmed_details}\n\n{error_action_advice}"
+                    else:
+                         final_google_chat_message = google_chat_full_error_message
+                    
+                    response = requests.post(google_chat_webhook, json={"text": final_google_chat_message}, timeout=15)
+                    print(f"Google Chat Error Notification - Status: {response.status_code}, Body: {response.text if response.status_code != 200 else 'OK'}")
                 except Exception as e:
-                    print(f"Error sending error notification to Google Chat: {str(e)}")
+                    print(f"Error sending Google Chat error notification: {str(e)}")
+            else:
+                print("GOOGLE_CHAT_WEBHOOK_URL not set. Skipping Google Chat error notification.")
         EOF
