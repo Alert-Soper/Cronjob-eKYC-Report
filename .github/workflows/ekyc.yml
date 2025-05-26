@@ -36,138 +36,130 @@ jobs:
         LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
       run: |
         python - <<EOF
-        import os
-        import requests
-        import json
-        from datetime import datetime, timedelta
+import os
+import requests
+import json
+from datetime import datetime, timedelta
 
-        # ตั้งค่า Grafana API
-        grafana_url = os.environ["GRAFANA_URL"]
-        headers = {
-            "Authorization": f"Bearer {os.environ['GRAFANA_TOKEN']}",
-            "Content-Type": "application/json"
-        }
-        
-        # 1. กำหนด PromQL Queries (ใช้ได้เหมือน Query ใน Prometheus โดยตรง)
-        job_name = "thinker-gw"
-        time_range = "1d"
-        time_r = "7d"
+grafana_url = os.environ["GRAFANA_URL"]
+headers = {
+    "Authorization": f"Bearer {os.environ['GRAFANA_TOKEN']}",
+    "Content-Type": "application/json"
+}
 
-        queries = {
-        "success_rate": f"""
-        100 * (
-            sum(rate(http_requests_total{{job="{job_name}", status=~"2.."}}[{time_range}]))
-            /
-            sum(rate(http_requests_total{{job="{job_name}"}}[{time_range}]))
-        )
-        """,
+job_name = "thinker-gw"
+time_range = "1d"
+time_r = "7d"
 
-        "api_errors": f"""
-        sum(rate(http_request_total{{job="{job_name}", status_code=~"5.."}}[{time_range}]))
-        """,
+queries = {
+    "success_rate": f"""
+    100 * (
+        sum(rate(http_requests_total{{job="{job_name}", status=~"2.."}}[{time_range}]))
+        /
+        sum(rate(http_requests_total{{job="{job_name}"}}[{time_range}]))
+    )
+    """,
+    "api_errors": f"""
+    sum(rate(http_request_total{{job="{job_name}", status_code=~"5.."}}[{time_range}]))
+    """,
+    "daily_attempts": f"""
+    sum(increase(http_request_total{{job="{job_name}"}}[{time_range}]))
+    """,
+    "weekly_attempts": f"""
+    sum(increase(http_request_total{{job="{job_name}"}}[{time_r}]))
+    """
+}
 
-        "daily_attempts": f"""
-        sum(increase(http_request_total{{job="{job_name}"}}[{time_range}]))
-        """,
+def query_prometheus_via_grafana(query):
+    now = datetime.now()
+    yesterday = now - timedelta(days=1)
+    params = {
+        "query": query,
+        "start": yesterday.timestamp(),
+        "end": now.timestamp(),
+        "step": "1h"
+    }
+    response = requests.get(
+        f"{grafana_url}/api/datasources/proxy/{os.environ['DATASOURCE_UID']}/api/v1/query_range",
+        headers=headers,
+        params=params
+    )
+    return response.json()
 
-        "weekly_attempts": f"""
-        sum(increase(http_request_total{{job="{job_name}"}}[{time_r}]))
-        """
-        }
+def process_results(results):
+    metrics = {}
 
-        # 2. ดึงข้อมูลผ่าน Grafana Data Source Proxy
-        def query_prometheus_via_grafana(query):
-            now = datetime.now()
-            yesterday = now - timedelta(days=1)
-            
-            params = {
-                "query": query,
-                "start": yesterday.timestamp(),
-                "end": now.timestamp(),
-                "step": "1h"  # ความถี่ของข้อมูล
-            }
-            
-            response = requests.get(
-                f"{grafana_url}/api/datasources/proxy/{os.environ['DATASOURCE_UID']}/api/v1/query_range",
-                headers=headers,
-                params=params
-            )
-            return response.json()
-
-        # 3. ประมวลผลผลลัพธ์
-        def process_results(results):
-            metrics = {}
-            
-            # Success Rate
-        if 'success_rate' in results:
-            try:
-            # สำหรับผลลัพธ์แบบ scalar (ค่าเดียว)
-        if results['success_rate']['data']['resultType'] == 'scalar':
+    if 'success_rate' in results:
+        try:
+            if results['success_rate']['data']['resultType'] == 'scalar':
                 metrics['success_rate'] = float(results['success_rate']['data']['result'][1])
-            # สำหรับผลลัพธ์แบบ range (หลายค่า)
-        elif results['success_rate']['data']['resultType'] == 'matrix':
+            elif results['success_rate']['data']['resultType'] == 'matrix':
                 values = [float(x[1]) for x in results['success_rate']['data']['result'][0]['values']]
                 metrics['success_rate'] = sum(values) / len(values)
-            except (KeyError, IndexError, TypeError) as e:
+        except (KeyError, IndexError, TypeError) as e:
             print(f"Error processing success_rate: {e}")
             metrics['success_rate'] = 0.0
-            
-            # API Errors
-        if 'api_errors' in results:
-                metrics['api_errors'] = sum(
-                    float(x[1]) for x in results['api_errors']['data']['result'][0]['values']
-                )
-            
-            # Attempts
-        if 'daily_attempts' in results:
-                metrics['daily_attempts'] = sum(
-                    float(x[1]) for x in results['daily_attempts']['data']['result'][0]['values']
-                )
-            
-        if 'weekly_attempts' in results:
-                metrics['weekly_attempts'] = sum(
-                    float(x[1]) for x in results['weekly_attempts']['data']['result'][0]['values']
-                )
-            
-            return metrics
 
-        # 4. ดึงข้อมูลทั้งหมด
-        results = {}
-        for name, query in queries.items():
-            results[name] = query_prometheus_via_grafana(query)
-
-        metrics = process_results(results)
-
-        # 5. สร้างและส่งรายงาน
-        if metrics:
-            report = [
-                "📊 รายงานระบบประจำวัน (via PromQL)",
-                f"⏰ ข้อมูลวันที่: {datetime.now().strftime('%Y-%m-%d')}",
-                "",
-                f"✅ Success Rate: {metrics.get('success_rate', 0):.2f}%",
-                f"❌ Error Rate: {100 - metrics.get('success_rate', 0):.2f}%",
-                "",
-                f"🔥 API Errors: {metrics.get('api_errors', 0):,.0f} ครั้ง",
-                "",
-                f"📈 Attempts วันนี้: {metrics.get('daily_attempts', 0):,.0f} ครั้ง",
-                f"📅 Attempts 7 วัน: {metrics.get('weekly_attempts', 0):,.0f} ครั้ง"
-            ]
-            
-            # ส่งไปยัง Line
-            message = {
-                "to": os.environ["LINE_GROUP_ID"],
-                "messages": [{
-                    "type": "text",
-                    "text": "\n".join(report)
-                }]
-            }
-            
-            response = requests.post(
-                'https://api.line.me/v2/bot/message/push',
-                headers={'Authorization': f'Bearer {os.environ["LINE_CHANNEL_ACCESS_TOKEN"]}'},
-                json=message
+    if 'api_errors' in results:
+        try:
+            metrics['api_errors'] = sum(
+                float(x[1]) for x in results['api_errors']['data']['result'][0]['values']
             )
-            print("ส่งรายงานเรียบร้อยแล้ว")
-        else:
-            print("ไม่พบข้อมูลสำหรับสร้างรายงาน")
-        EOF
+        except:
+            metrics['api_errors'] = 0.0
+
+    if 'daily_attempts' in results:
+        try:
+            metrics['daily_attempts'] = sum(
+                float(x[1]) for x in results['daily_attempts']['data']['result'][0]['values']
+            )
+        except:
+            metrics['daily_attempts'] = 0.0
+
+    if 'weekly_attempts' in results:
+        try:
+            metrics['weekly_attempts'] = sum(
+                float(x[1]) for x in results['weekly_attempts']['data']['result'][0]['values']
+            )
+        except:
+            metrics['weekly_attempts'] = 0.0
+
+    return metrics
+
+results = {}
+for name, query in queries.items():
+    results[name] = query_prometheus_via_grafana(query)
+
+metrics = process_results(results)
+
+if metrics:
+    report = [
+        "📊 รายงานระบบประจำวัน (via PromQL)",
+        f"⏰ ข้อมูลวันที่: {datetime.now().strftime('%Y-%m-%d')}",
+        "",
+        f"✅ Success Rate: {metrics.get('success_rate', 0):.2f}%",
+        f"❌ Error Rate: {100 - metrics.get('success_rate', 0):.2f}%",
+        "",
+        f"🔥 API Errors: {metrics.get('api_errors', 0):,.0f} ครั้ง",
+        "",
+        f"📈 Attempts วันนี้: {metrics.get('daily_attempts', 0):,.0f} ครั้ง",
+        f"📅 Attempts 7 วัน: {metrics.get('weekly_attempts', 0):,.0f} ครั้ง"
+    ]
+
+    message = {
+        "to": os.environ["LINE_GROUP_ID"],
+        "messages": [{
+            "type": "text",
+            "text": "\n".join(report)
+        }]
+    }
+
+    response = requests.post(
+        'https://api.line.me/v2/bot/message/push',
+        headers={'Authorization': f'Bearer {os.environ["LINE_CHANNEL_ACCESS_TOKEN"]}'},
+        json=message
+    )
+    print("ส่งรายงานเรียบร้อยแล้ว")
+else:
+    print("ไม่พบข้อมูลสำหรับสร้างรายงาน")
+EOF
