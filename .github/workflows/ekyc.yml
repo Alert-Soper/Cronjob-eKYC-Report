@@ -141,6 +141,7 @@ jobs:
                 )
                 print(f"LINE API Response Status Code: {response.status_code}")
                 print(f"LINE API Response Body: {response.text}")
+                print("Debug - LINE_GROUP_ID:", os.environ.get("LINE_GROUP_ID"))
             except Exception as e:
                 print(f"Error sending LINE message: {str(e)}")
 
@@ -169,6 +170,7 @@ jobs:
                     json=google_chat_message
                 )
                 print(f"Google Chat Response Status Code: {response.status_code}")
+                print("Debug - GRAFANA_TOKEN:", os.environ.get("GRAFANA_TOKEN"))
             except Exception as e:
                 print(f"Error sending Google Chat message: {str(e)}")
 
@@ -208,6 +210,7 @@ jobs:
                     server.send_message(msg)
                 
                 print("ส่งอีเมลเรียบร้อยแล้ว")
+                print("Debug - EMAIL_RECIPIENTS:", os.environ.get("EMAIL_RECIPIENTS"))
             except Exception as e:
                 print(f"ส่งเมลล้มเหลว: {str(e)}")
 
