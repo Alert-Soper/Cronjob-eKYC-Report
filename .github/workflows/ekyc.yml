@@ -173,11 +173,15 @@ jobs:
                 print(f"Error sending Google Chat message: {str(e)}")
 
             # 3. ส่ง Email
+          recipients = os.environ["EMAIL_RECIPIENTS"].strip()
+          if not recipients:
+            print("ไม่มีอีเมลผู้รับที่กำหนด")
+          else:
             try:
                 # ตั้งค่าอีเมล
                 msg = MIMEMultipart()
                 msg['From'] = os.environ["SMTP_USERNAME"]
-                msg['To'] = os.environ["EMAIL_RECIPIENTS"]
+                msg['To'] = recipients
                 msg['Subject'] = f"รายงานระบบประจำวัน {report_date}"
 
                 # สร้างเนื้อหาอีเมล HTML
@@ -208,12 +212,14 @@ jobs:
                     server.send_message(msg)
                 
                 print("ส่งอีเมลเรียบร้อยแล้ว")
+                print(f"พยายามส่งเมลไปที่: {recipients}")
             except Exception as e:
                 print(f"Error sending email: {str(e)}")
+                print(f"ส่งเมลล้มเหลว: {str(e)}")
 
             print("ส่งรายงานทั้งหมดเรียบร้อยแล้ว")
         else:
-            error_message = "ไม่พบข้อมูลสำหรับสร้างรายงาน"
+            error_message = "ไม่พบข้อมูลสำหรับสร้างรายงาน\n\nRaw results:\n" + json.dumps(results, indent=2)
             print(error_message)
             
             # ส่งข้อความแจ้งเตือนเมื่อไม่พบข้อมูล
