@@ -5,7 +5,7 @@ on:
     - cron: '30 1 * * *'  # ทุกวันเวลา 09:00 UTC (16:00 น. ไทย)
   push:
     branches:
-    - main
+      - main
   workflow_dispatch:
 
 env:
@@ -35,131 +35,146 @@ jobs:
         GRAFANA_TOKEN: ${{ secrets.GRAFANA_TOKEN }}
         LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
       run: |
-        python - <<EOF
-import os
-import requests
-import json
-from datetime import datetime, timedelta
+        python - << 'EOF'
+        import os
+        import requests
+        import json
+        from datetime import datetime, timedelta
 
-grafana_url = os.environ["GRAFANA_URL"]
-headers = {
-    "Authorization": f"Bearer {os.environ['GRAFANA_TOKEN']}",
-    "Content-Type": "application/json"
-}
+        grafana_url = os.environ["GRAFANA_URL"]
+        headers = {
+            "Authorization": f"Bearer {os.environ['GRAFANA_TOKEN']}",
+            "Content-Type": "application/json"
+        }
 
-job_name = "thinker-gw"
-time_range = "1d"
-time_r = "7d"
+        job_name = "thinker-gw"
+        time_range = "1d"
+        time_r = "7d"
 
-queries = {
-    "success_rate": f"""
-    100 * (
-        sum(rate(http_requests_total{{job="{job_name}", status=~"2.."}}[{time_range}]))
-        /
-        sum(rate(http_requests_total{{job="{job_name}"}}[{time_range}]))
-    )
-    """,
-    "api_errors": f"""
-    sum(rate(http_request_total{{job="{job_name}", status_code=~"5.."}}[{time_range}]))
-    """,
-    "daily_attempts": f"""
-    sum(increase(http_request_total{{job="{job_name}"}}[{time_range}]))
-    """,
-    "weekly_attempts": f"""
-    sum(increase(http_request_total{{job="{job_name}"}}[{time_r}]))
-    """
-}
-
-def query_prometheus_via_grafana(query):
-    now = datetime.now()
-    yesterday = now - timedelta(days=1)
-    params = {
-        "query": query,
-        "start": yesterday.timestamp(),
-        "end": now.timestamp(),
-        "step": "1h"
-    }
-    response = requests.get(
-        f"{grafana_url}/api/datasources/proxy/{os.environ['DATASOURCE_UID']}/api/v1/query_range",
-        headers=headers,
-        params=params
-    )
-    return response.json()
-
-def process_results(results):
-    metrics = {}
-
-    if 'success_rate' in results:
-        try:
-            if results['success_rate']['data']['resultType'] == 'scalar':
-                metrics['success_rate'] = float(results['success_rate']['data']['result'][1])
-            elif results['success_rate']['data']['resultType'] == 'matrix':
-                values = [float(x[1]) for x in results['success_rate']['data']['result'][0]['values']]
-                metrics['success_rate'] = sum(values) / len(values)
-        except (KeyError, IndexError, TypeError) as e:
-            print(f"Error processing success_rate: {e}")
-            metrics['success_rate'] = 0.0
-
-    if 'api_errors' in results:
-        try:
-            metrics['api_errors'] = sum(
-                float(x[1]) for x in results['api_errors']['data']['result'][0]['values']
+        queries = {
+            "success_rate": f'''
+            100 * (
+                sum(rate(http_requests_total{{job="{job_name}", status=~"2.."}}[{time_range}]))
+                /
+                sum(rate(http_requests_total{{job="{job_name}"}}[{time_range}]))
             )
-        except:
-            metrics['api_errors'] = 0.0
+            ''',
+            "api_errors": f'''
+            sum(rate(http_requests_total{{job="{job_name}", status=~"5.."}}[{time_range}]))
+            ''',
+            "daily_attempts": f'''
+            sum(increase(http_requests_total{{job="{job_name}"}}[{time_range}]))
+            ''',
+            "weekly_attempts": f'''
+            sum(increase(http_requests_total{{job="{job_name}"}}[{time_r}]))
+            '''
+        }
 
-    if 'daily_attempts' in results:
-        try:
-            metrics['daily_attempts'] = sum(
-                float(x[1]) for x in results['daily_attempts']['data']['result'][0]['values']
+        def query_prometheus_via_grafana(query):
+            now = datetime.now()
+            yesterday = now - timedelta(days=1)
+            params = {
+                "query": query,
+                "start": yesterday.timestamp(),
+                "end": now.timestamp(),
+                "step": "1h"
+            }
+            response = requests.get(
+                f"{grafana_url}/api/datasources/proxy/{os.environ['DATASOURCE_UID']}/api/v1/query_range",
+                headers=headers,
+                params=params
             )
-        except:
-            metrics['daily_attempts'] = 0.0
+            return response.json()
 
-    if 'weekly_attempts' in results:
-        try:
-            metrics['weekly_attempts'] = sum(
-                float(x[1]) for x in results['weekly_attempts']['data']['result'][0]['values']
+        def process_results(results):
+            metrics = {}
+
+            if 'success_rate' in results:
+                try:
+                    if results['success_rate']['data']['resultType'] == 'scalar':
+                        metrics['success_rate'] = float(results['success_rate']['data']['result'][1])
+                    elif results['success_rate']['data']['resultType'] == 'matrix':
+                        values = [float(x[1]) for x in results['success_rate']['data']['result'][0]['values']]
+                        metrics['success_rate'] = sum(values) / len(values)
+                except (KeyError, IndexError, TypeError) as e:
+                    print(f"Error processing success_rate: {e}")
+                    metrics['success_rate'] = 0.0
+
+            if 'api_errors' in results:
+                try:
+                    if results['api_errors']['data']['resultType'] == 'scalar':
+                        metrics['api_errors'] = float(results['api_errors']['data']['result'][1])
+                    elif results['api_errors']['data']['resultType'] == 'matrix':
+                        metrics['api_errors'] = sum(
+                            float(x[1]) for x in results['api_errors']['data']['result'][0]['values']
+                        )
+                except (KeyError, IndexError, TypeError) as e:
+                    print(f"Error processing api_errors: {e}")
+                    metrics['api_errors'] = 0.0
+
+            if 'daily_attempts' in results:
+                try:
+                    if results['daily_attempts']['data']['resultType'] == 'scalar':
+                        metrics['daily_attempts'] = float(results['daily_attempts']['data']['result'][1])
+                    elif results['daily_attempts']['data']['resultType'] == 'matrix':
+                        metrics['daily_attempts'] = sum(
+                            float(x[1]) for x in results['daily_attempts']['data']['result'][0]['values']
+                        )
+                except (KeyError, IndexError, TypeError) as e:
+                    print(f"Error processing daily_attempts: {e}")
+                    metrics['daily_attempts'] = 0.0
+
+            if 'weekly_attempts' in results:
+                try:
+                    if results['weekly_attempts']['data']['resultType'] == 'scalar':
+                        metrics['weekly_attempts'] = float(results['weekly_attempts']['data']['result'][1])
+                    elif results['weekly_attempts']['data']['resultType'] == 'matrix':
+                        metrics['weekly_attempts'] = sum(
+                            float(x[1]) for x in results['weekly_attempts']['data']['result'][0]['values']
+                        )
+                except (KeyError, IndexError, TypeError) as e:
+                    print(f"Error processing weekly_attempts: {e}")
+                    metrics['weekly_attempts'] = 0.0
+
+            return metrics
+
+        results = {}
+        for name, query in queries.items():
+            results[name] = query_prometheus_via_grafana(query)
+
+        print("Raw results for debugging:")
+        print(json.dumps(results, indent=2))
+
+        metrics = process_results(results)
+
+        if metrics:
+            report = [
+                "📊 รายงานระบบประจำวัน (via PromQL)",
+                f"⏰ ข้อมูลวันที่: {datetime.now().strftime('%Y-%m-%d')}",
+                "",
+                f"✅ Success Rate: {metrics.get('success_rate', 0):.2f}%",
+                f"❌ Error Rate: {100 - metrics.get('success_rate', 0):.2f}%",
+                "",
+                f"🔥 API Errors: {metrics.get('api_errors', 0):,.0f} ครั้ง",
+                "",
+                f"📈 Attempts วันนี้: {metrics.get('daily_attempts', 0):,.0f} ครั้ง",
+                f"📅 Attempts 7 วัน: {metrics.get('weekly_attempts', 0):,.0f} ครั้ง"
+            ]
+
+            message = {
+                "to": os.environ["LINE_GROUP_ID"],
+                "messages": [{
+                    "type": "text",
+                    "text": "\n".join(report)
+                }]
+            }
+
+            response = requests.post(
+                'https://api.line.me/v2/bot/message/push',
+                headers={'Authorization': f'Bearer {os.environ["LINE_CHANNEL_ACCESS_TOKEN"]}'},
+                json=message
             )
-        except:
-            metrics['weekly_attempts'] = 0.0
-
-    return metrics
-
-results = {}
-for name, query in queries.items():
-    results[name] = query_prometheus_via_grafana(query)
-
-metrics = process_results(results)
-
-if metrics:
-    report = [
-        "📊 รายงานระบบประจำวัน (via PromQL)",
-        f"⏰ ข้อมูลวันที่: {datetime.now().strftime('%Y-%m-%d')}",
-        "",
-        f"✅ Success Rate: {metrics.get('success_rate', 0):.2f}%",
-        f"❌ Error Rate: {100 - metrics.get('success_rate', 0):.2f}%",
-        "",
-        f"🔥 API Errors: {metrics.get('api_errors', 0):,.0f} ครั้ง",
-        "",
-        f"📈 Attempts วันนี้: {metrics.get('daily_attempts', 0):,.0f} ครั้ง",
-        f"📅 Attempts 7 วัน: {metrics.get('weekly_attempts', 0):,.0f} ครั้ง"
-    ]
-
-    message = {
-        "to": os.environ["LINE_GROUP_ID"],
-        "messages": [{
-            "type": "text",
-            "text": "\n".join(report)
-        }]
-    }
-
-    response = requests.post(
-        'https://api.line.me/v2/bot/message/push',
-        headers={'Authorization': f'Bearer {os.environ["LINE_CHANNEL_ACCESS_TOKEN"]}'},
-        json=message
-    )
-    print("ส่งรายงานเรียบร้อยแล้ว")
-else:
-    print("ไม่พบข้อมูลสำหรับสร้างรายงาน")
-EOF
+            print("ส่งรายงานเรียบร้อยแล้ว")
+        else:
+            print("ไม่พบข้อมูลสำหรับสร้างรายงาน")
+        EOF
