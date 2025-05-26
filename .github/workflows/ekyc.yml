@@ -141,7 +141,6 @@ jobs:
                 )
                 print(f"LINE API Response Status Code: {response.status_code}")
                 print(f"LINE API Response Body: {response.text}")
-                print("Debug - LINE_GROUP_ID:", os.environ.get("LINE_GROUP_ID"))
             except Exception as e:
                 print(f"Error sending LINE message: {str(e)}")
 
@@ -169,8 +168,7 @@ jobs:
                     os.environ["GOOGLE_CHAT_WEBHOOK_URL"],
                     json=google_chat_message
                 )
-                print(f"Google Chat Response Status Code: {response.status_code}")
-                print("Debug - GRAFANA_TOKEN:", os.environ.get("GRAFANA_TOKEN"))
+                print(f"Google Chat Response Status Code: {response.status_code}")                
             except Exception as e:
                 print(f"Error sending Google Chat message: {str(e)}")
 
@@ -207,10 +205,9 @@ jobs:
                 with smtplib.SMTP('smtp.gmail.com', 587) as server:
                     server.starttls()
                     server.login(os.environ["SMTP_USERNAME"], os.environ["SMTP_PASSWORD"])
-                    server.send_message(msg)
-                
+                    server.send_message(msg)                
                 print("ส่งอีเมลเรียบร้อยแล้ว")
-                print("Debug - EMAIL_RECIPIENTS:", os.environ.get("EMAIL_RECIPIENTS"))
+                
             except Exception as e:
                 print(f"ส่งเมลล้มเหลว: {str(e)}")
 
@@ -218,7 +215,9 @@ jobs:
         else:
             error_message = "ไม่พบข้อมูลสำหรับสร้างรายงาน\n\nRaw results:\n" + json.dumps(results, indent=2)
             print(error_message)
-            
+            print("Debug - LINE_GROUP_ID:", os.environ.get("LINE_GROUP_ID"))
+            print("Debug - GRAFANA_TOKEN:", os.environ.get("GRAFANA_TOKEN"))
+            print("Debug - EMAIL_RECIPIENTS:", os.environ.get("EMAIL_RECIPIENTS"))
             # ส่งข้อความแจ้งเตือนเมื่อไม่พบข้อมูล
             try:
                 requests.post(
