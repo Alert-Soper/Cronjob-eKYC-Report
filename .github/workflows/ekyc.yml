@@ -1,8 +1,8 @@
 name: Daily PromQL Report via Grafana
 
 on:
-  schedule:
-    - cron: '30 1 * * *'  # ทุกวันเวลา 01:30 UTC (08:30 น. ไทย) - ปรับเวลาให้สอดคล้องกับความต้องการ
+ # schedule:
+ #   - cron: '30 1 * * *'  # ทุกวันเวลา 01:30 UTC (08:30 น. ไทย) - ปรับเวลาให้สอดคล้องกับความต้องการ
   push:
     branches:
       - main
